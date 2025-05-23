@@ -1,15 +1,16 @@
+// vercel.json (se o index.js estiver NA RAIZ do projeto)
 {
   "version": 2,
   "builds": [
     {
-      "src": "api/index.js",
+      "src": "index.js",  // Alterado para o arquivo na raiz
       "use": "@vercel/node"
     }
   ],
   "routes": [
     {
-      "src": "/api/(.*)",
-      "dest": "/api/index.js"
+      "src": "/(.*)",
+      "dest": "/index.js" // Alterado para o arquivo na raiz
     }
   ]
 }
