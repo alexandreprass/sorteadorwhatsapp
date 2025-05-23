@@ -25,8 +25,6 @@ try {
   if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
     console.warn('[BOT_WARN] Variáveis de ambiente UPSTASH_REDIS_REST_URL e/ou UPSTASH_REDIS_REST_TOKEN não estão definidas!');
   }
-  // O bot não poderá funcionar corretamente sem o Redis neste ponto.
-  // Considerar lançar um erro ou ter um tratamento mais robusto se o Redis for essencial para o boot.
 }
 
 
@@ -48,7 +46,6 @@ async function useUpstashAuthState() {
       const dataString = await redis.get(key);
       if (dataString) {
         console.log(`[BOT_DEBUG] useUpstashAuthState.readData: Dados encontrados para chave "${key}" (tipo: ${typeof dataString})`);
-        // Desserializa usando BufferJSON.reviver para tratar Buffers corretamente
         return JSON.parse(dataString, BufferJSON.reviver);
       }
       console.log(`[BOT_DEBUG] useUpstashAuthState.readData: Nenhum dado para chave "${key}"`);
@@ -66,7 +63,6 @@ async function useUpstashAuthState() {
       return;
     }
     try {
-      // Serializa usando BufferJSON.replacer antes de salvar
       await redis.set(key, JSON.stringify(data, BufferJSON.replacer));
       console.log(`[BOT_DEBUG] useUpstashAuthState.writeData: Chave "${key}" escrita com sucesso.`);
     } catch (error) {
@@ -88,15 +84,21 @@ async function useUpstashAuthState() {
     }
   };
 
-  const creds = (await readData(AUTH_CREDS_REDIS_KEY)) || initAuthCreds();
-  if (creds === initAuthCreds()) {
-    console.log('[BOT_DEBUG] useUpstashAuthState: Novas credenciais inicializadas (initAuthCreds).');
-  } else if (!creds.processedHistoryMessages) {
-      console.log('[BOT_DEBUG] useUpstashAuthState: Credenciais carregadas, mas sem histórico processado (ou campo ausente).');
+  const credsFromDB = await readData(AUTH_CREDS_REDIS_KEY);
+  const creds = credsFromDB || initAuthCreds();
+
+  if (credsFromDB) {
+    console.log('[BOT_DEBUG] useUpstashAuthState: Credenciais carregadas do DB.');
+     if (!creds.processedHistoryMessages) {
+        console.log('[BOT_DEBUG] useUpstashAuthState: Credenciais carregadas, mas sem histórico processado (ou campo ausente).');
+    } else {
+        console.log('[BOT_DEBUG] useUpstashAuthState: Credenciais carregadas com histórico processado.');
+    }
   } else {
-      console.log('[BOT_DEBUG] useUpstashAuthState: Credenciais carregadas com histórico processado.');
+    console.log('[BOT_DEBUG] useUpstashAuthState: Novas credenciais inicializadas (initAuthCreds), pois não foram encontradas no DB.');
   }
-  console.log('[BOT_DEBUG] useUpstashAuthState: Credenciais carregadas/inicializadas.');
+  console.log('[BOT_DEBUG] useUpstashAuthState: Processamento de credenciais concluído.');
+
 
   return {
     state: {
@@ -109,13 +111,12 @@ async function useUpstashAuthState() {
             const key = `${AUTH_KEYS_REDIS_PREFIX}_${type}_${id}`;
             let value = await readData(key);
             if (value) {
-              if (type === 'app-state-sync-key' && value.keyData) { // Baileys specific type handling
+              if (type === 'app-state-sync-key' && value.keyData) { 
                 value = proto.Message.AppStateSyncKeyData.fromObject(value);
               }
               data[id] = value;
             }
           }
-          // console.log(`[BOT_DEBUG] useUpstashAuthState.keys.get: Dados retornados para tipo "${type}":`, data);
           return data;
         },
         set: async (data) => {
@@ -149,7 +150,7 @@ async function startBot() {
   console.log('[BOT_DEBUG] startBot: Iniciando função startBot...');
   if (!redis) {
     console.error('[BOT_ERROR] startBot: Cliente Redis não está disponível. Bot não pode iniciar. Verifique as variáveis de ambiente e a inicialização do Redis.');
-    return; // Bot não pode funcionar sem Redis
+    return; 
   }
 
   let state, saveCreds;
@@ -161,14 +162,13 @@ async function startBot() {
     console.log('[BOT_DEBUG] startBot: useUpstashAuthState retornado com sucesso.');
   } catch (e) {
     console.error('[BOT_ERROR] startBot: Erro crítico ao chamar useUpstashAuthState:', e);
-    return; // Não pode continuar sem auth state
+    return; 
   }
 
   console.log('[BOT_DEBUG] startBot: Chamando makeWASocket...');
   const sock = makeWASocket({
     auth: state,
-    printQRInTerminal: true,
-    // logger: require('pino')({ level: 'trace' }) // Para debug extremo do Baileys, pode ser muito verboso
+    printQRInTerminal: true, // Baileys ainda pode usar isso, apesar do aviso de depreciação
   });
   console.log('[BOT_DEBUG] startBot: makeWASocket chamado.');
 
@@ -205,11 +205,17 @@ async function startBot() {
   await loadParticipantsFromRedis();
 
   sock.ev.on('connection.update', (update) => {
-    console.log('[BOT_DEBUG] sock.ev("connection.update"): Evento recebido:', JSON.stringify(update));
+    console.log('[BOT_DEBUG] sock.ev("connection.update"): Evento recebido:', JSON.stringify(update)); // Log do evento completo
     const { connection, lastDisconnect, qr } = update;
     if (qr) {
-      console.log('[BOT_INFO] Novo QR code gerado. Escaneie com seu WhatsApp:');
-      qrcode.generate(qr, { small: true }); // QR code no terminal/logs
+      console.log('[BOT_INFO] Novo QR code gerado. Escaneie com seu WhatsApp ou use a string abaixo:');
+      console.log('--- INÍCIO DA STRING DO QR CODE ---');
+      console.log(qr); // Loga a string original do QR Code
+      console.log('--- FIM DA STRING DO QR CODE ---');
+      // qrcode-terminal ainda tenta desenhar, apesar do aviso de depreciação do printQRInTerminal
+      // Se o printQRInTerminal for totalmente removido do Baileys, esta linha abaixo ainda funcionaria.
+      console.log('[BOT_INFO] Tentando desenhar QR Code ASCII:');
+      qrcode.generate(qr, { small: true }); 
     }
     if (connection === 'close') {
       const boomError = lastDisconnect?.error ? new Boom(lastDisconnect.error) : undefined;
@@ -222,10 +228,8 @@ async function startBot() {
       } else if (statusCode === DisconnectReason.loggedOut) {
         console.log("[BOT_WARN] Deslogado do WhatsApp. Não vai reconectar. Limpe as credenciais manualmente no Redis se quiser forçar novo QR na próxima inicialização.");
       } else if (shouldReconnect) {
-        console.log('[BOT_INFO] Tentando reconectar chamando startBot() novamente...');
-        // Cuidado com loops de reconexão muito rápidos em caso de falhas persistentes.
-        // Adicionar um delay ou contador de tentativas pode ser uma boa ideia.
-        setTimeout(startBot, 5000); // Tenta reconectar após 5 segundos, por exemplo.
+        console.log('[BOT_INFO] Tentando reconectar chamando startBot() novamente em 5 segundos...');
+        setTimeout(startBot, 5000); 
       }
     } else if (connection === 'open') {
       console.log('[BOT_INFO] Bot conectado ao WhatsApp!');
@@ -233,10 +237,10 @@ async function startBot() {
     }
   });
 
-  sock.ev.on('creds.update', async () => { // Marcar como async se saveCreds for async
+  sock.ev.on('creds.update', async () => { 
     console.log('[BOT_DEBUG] sock.ev("creds.update"): Evento recebido. Chamando saveCreds...');
     try {
-      await saveCreds(); // saveCreds já tem seus próprios logs internos
+      await saveCreds(); 
       console.log('[BOT_DEBUG] sock.ev("creds.update"): saveCreds chamado e concluído.');
     } catch (e) {
       console.error('[BOT_ERROR] sock.ev("creds.update"): Erro durante saveCreds:', e);
@@ -244,7 +248,7 @@ async function startBot() {
   });
 
   sock.ev.on('messages.upsert', async ({ messages }) => {
-    console.log('[BOT_DEBUG] sock.ev("messages.upsert"): Evento recebido:', JSON.stringify(messages[0]?.key)); // Log mais curto
+    console.log('[BOT_DEBUG] sock.ev("messages.upsert"): Evento recebido:', JSON.stringify(messages[0]?.key)); 
     const msg = messages[0];
     if (!msg.message) {
       console.log('[BOT_DEBUG] Mensagem sem conteúdo (msg.message), ignorando.');
@@ -257,7 +261,7 @@ async function startBot() {
 
     const chatId = msg.key.remoteJid;
     const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
-    const senderId = msg.key.participant || msg.key.remoteJid; // ID do participante em grupo, ou do contato em chat privado
+    const senderId = msg.key.participant || msg.key.remoteJid; 
     console.log(`[BOT_DEBUG] Mensagem recebida: ChatID="${chatId}", SenderID="${senderId}", Texto="${text}"`);
 
     if (text.startsWith('@') && text.length > 1) {
@@ -297,11 +301,8 @@ async function startBot() {
       const botJid = sock.user?.id;
       console.log(`[BOT_DEBUG] Verificando permissão: SenderID="${senderId}", BotJID="${botJid}"`);
       
-      // Simplificando a lógica de permissão: apenas o próprio número do bot pode sortear.
-      // Você pode querer uma lógica mais complexa, como verificar se o senderId é um admin do grupo,
-      // ou se é um número de telefone específico seu.
       const senderNumericId = senderId.split('@')[0];
-      const botNumericId = botJid ? botJid.split(':')[0].split('@')[0] : null; // Pega a parte numérica antes do ':' e '@'
+      const botNumericId = botJid ? botJid.split(':')[0].split('@')[0] : null;
 
       if (!botJid || senderNumericId !== botNumericId) {
         console.log('[BOT_WARN] Comando !sortear negado. Permissão insuficiente.');
@@ -358,7 +359,7 @@ async function startBot() {
         console.log('[BOT_INFO] Mensagem de vencedores enviada.');
 
         participants = [];
-        await saveParticipantsToRedis(); // Salva a lista vazia
+        await saveParticipantsToRedis(); 
         console.log('[BOT_INFO] Lista de participantes resetada.');
         await sock.sendMessage(chatId, { text: 'Lista de participantes resetada para o próximo sorteio!' });
       } catch(e) {
@@ -369,8 +370,6 @@ async function startBot() {
   console.log('[BOT_DEBUG] startBot: Handlers de eventos configurados.');
 }
 
-// Chama startBot() quando o script é carregado pela Vercel.
-// O QR Code (se necessário) aparecerá nos logs da função.
 console.log('[BOT_DEBUG] Chamando startBot() automaticamente ao carregar o script...');
 startBot().catch((err) => {
   console.error('[BOT_FATAL] Erro crítico não tratado na chamada inicial de startBot():', err);
@@ -378,14 +377,10 @@ startBot().catch((err) => {
 
 console.log('[BOT_DEBUG] ----- FIM DO SETUP INICIAL DO SCRIPT api/index.js -----');
 
-// Exporta um handler HTTP para satisfazer a Vercel e evitar o erro "No exports found".
-// Esta função será chamada se houver uma requisição HTTP para a rota da função.
 module.exports = (req, res) => {
   console.log(`[BOT_HANDLER] Requisição HTTP recebida: ${req.method} ${req.url}`);
   console.log('[BOT_HANDLER] O bot tenta iniciar automaticamente quando a função Vercel é carregada.');
   console.log('[BOT_HANDLER] Verifique os logs da função para o QR Code ou status da conexão do bot.');
   
-  // Responde à requisição HTTP.
-  // O estado do bot (se está conectado, etc.) é gerenciado pelo startBot() e seus eventos.
   res.status(200).send('Host do Bot WhatsApp ativo. O bot opera em segundo plano. Verifique os logs da função para status ou QR code.');
 };
