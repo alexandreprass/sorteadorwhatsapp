@@ -21,19 +21,12 @@ try {
   console.log('[BOT_DEBUG] Cliente Upstash Redis inicializado via fromEnv().');
 } catch (e) {
   console.error('[BOT_ERROR] Falha ao inicializar cliente Redis fromEnv():', e);
-  console.log('[BOT_DEBUG] Tentando inicializar cliente Redis com URLs explícitas (placeholder - ajuste se necessário):');
-  // Fallback ou configuração explícita se fromEnv() falhar ou não for configurado
-  // Lembre-se que as variáveis de ambiente são a forma preferida na Vercel.
-  // Este bloco é mais para teste local se as env vars não estiverem setadas.
+  console.log('[BOT_DEBUG] Verifique se as variáveis de ambiente UPSTASH_REDIS_REST_URL e UPSTASH_REDIS_REST_TOKEN estão configuradas corretamente na Vercel.');
   if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
-    console.warn('[BOT_WARN] Variáveis de ambiente UPSTASH_REDIS_REST_URL e UPSTASH_REDIS_REST_TOKEN não estão definidas!');
-    // Você pode lançar um erro aqui se elas forem estritamente necessárias
-    // throw new Error("Variáveis de ambiente do Redis não configuradas!");
-  } else {
-     // Se fromEnv() falhou mas as vars existem, o problema pode ser outro.
-     console.log(`[BOT_DEBUG] UPSTASH_REDIS_REST_URL: ${process.env.UPSTASH_REDIS_REST_URL ? 'Definida' : 'NÃO DEFINIDA'}`);
-     console.log(`[BOT_DEBUG] UPSTASH_REDIS_REST_TOKEN: ${process.env.UPSTASH_REDIS_REST_TOKEN ? 'Definida' : 'NÃO DEFINIDA'}`);
+    console.warn('[BOT_WARN] Variáveis de ambiente UPSTASH_REDIS_REST_URL e/ou UPSTASH_REDIS_REST_TOKEN não estão definidas!');
   }
+  // O bot não poderá funcionar corretamente sem o Redis neste ponto.
+  // Considerar lançar um erro ou ter um tratamento mais robusto se o Redis for essencial para o boot.
 }
 
 
@@ -54,13 +47,14 @@ async function useUpstashAuthState() {
     try {
       const dataString = await redis.get(key);
       if (dataString) {
-        console.log(`[BOT_DEBUG] useUpstashAuthState.readData: Dados encontrados para chave "${key}"`);
+        console.log(`[BOT_DEBUG] useUpstashAuthState.readData: Dados encontrados para chave "${key}" (tipo: ${typeof dataString})`);
+        // Desserializa usando BufferJSON.reviver para tratar Buffers corretamente
         return JSON.parse(dataString, BufferJSON.reviver);
       }
       console.log(`[BOT_DEBUG] useUpstashAuthState.readData: Nenhum dado para chave "${key}"`);
       return null;
     } catch (error) {
-      console.error(`[BOT_ERROR] useUpstashAuthState.readData: Falha ao ler ${key}:`, error);
+      console.error(`[BOT_ERROR] useUpstashAuthState.readData: Falha ao ler ou parsear ${key}:`, error);
       return null;
     }
   };
@@ -72,6 +66,7 @@ async function useUpstashAuthState() {
       return;
     }
     try {
+      // Serializa usando BufferJSON.replacer antes de salvar
       await redis.set(key, JSON.stringify(data, BufferJSON.replacer));
       console.log(`[BOT_DEBUG] useUpstashAuthState.writeData: Chave "${key}" escrita com sucesso.`);
     } catch (error) {
@@ -94,8 +89,10 @@ async function useUpstashAuthState() {
   };
 
   const creds = (await readData(AUTH_CREDS_REDIS_KEY)) || initAuthCreds();
-  if (!creds.processedHistoryMessages) { // Exemplo de log para creds
-      console.log('[BOT_DEBUG] useUpstashAuthState: Novas credenciais ou credenciais sem histórico processado.');
+  if (creds === initAuthCreds()) {
+    console.log('[BOT_DEBUG] useUpstashAuthState: Novas credenciais inicializadas (initAuthCreds).');
+  } else if (!creds.processedHistoryMessages) {
+      console.log('[BOT_DEBUG] useUpstashAuthState: Credenciais carregadas, mas sem histórico processado (ou campo ausente).');
   } else {
       console.log('[BOT_DEBUG] useUpstashAuthState: Credenciais carregadas com histórico processado.');
   }
@@ -112,13 +109,13 @@ async function useUpstashAuthState() {
             const key = `${AUTH_KEYS_REDIS_PREFIX}_${type}_${id}`;
             let value = await readData(key);
             if (value) {
-              if (type === 'app-state-sync-key' && value.keyData) {
+              if (type === 'app-state-sync-key' && value.keyData) { // Baileys specific type handling
                 value = proto.Message.AppStateSyncKeyData.fromObject(value);
               }
               data[id] = value;
             }
           }
-          console.log(`[BOT_DEBUG] useUpstashAuthState.keys.get: Dados retornados para tipo "${type}".`);
+          // console.log(`[BOT_DEBUG] useUpstashAuthState.keys.get: Dados retornados para tipo "${type}":`, data);
           return data;
         },
         set: async (data) => {
@@ -151,8 +148,8 @@ async function useUpstashAuthState() {
 async function startBot() {
   console.log('[BOT_DEBUG] startBot: Iniciando função startBot...');
   if (!redis) {
-    console.error('[BOT_ERROR] startBot: Cliente Redis não está disponível. Bot não pode iniciar.');
-    return;
+    console.error('[BOT_ERROR] startBot: Cliente Redis não está disponível. Bot não pode iniciar. Verifique as variáveis de ambiente e a inicialização do Redis.');
+    return; // Bot não pode funcionar sem Redis
   }
 
   let state, saveCreds;
@@ -163,7 +160,7 @@ async function startBot() {
     saveCreds = authResult.saveCreds;
     console.log('[BOT_DEBUG] startBot: useUpstashAuthState retornado com sucesso.');
   } catch (e) {
-    console.error('[BOT_ERROR] startBot: Erro ao chamar useUpstashAuthState:', e);
+    console.error('[BOT_ERROR] startBot: Erro crítico ao chamar useUpstashAuthState:', e);
     return; // Não pode continuar sem auth state
   }
 
@@ -178,7 +175,7 @@ async function startBot() {
   let participants = [];
 
   const saveParticipantsToRedis = async () => {
-    console.log('[BOT_DEBUG] saveParticipantsToRedis: Salvando participantes...', participants);
+    console.log('[BOT_DEBUG] saveParticipantsToRedis: Salvando participantes...', participants.length > 0 ? participants : 'Lista vazia');
     try {
       await redis.set(PARTICIPANTS_REDIS_KEY, participants);
       console.log('[BOT_DEBUG] saveParticipantsToRedis: Participantes salvos no Redis.');
@@ -193,10 +190,10 @@ async function startBot() {
       const data = await redis.get(PARTICIPANTS_REDIS_KEY);
       if (data && Array.isArray(data)) {
         participants = data;
-        console.log('[BOT_DEBUG] loadParticipantsFromRedis: Participantes carregados:', participants);
+        console.log('[BOT_DEBUG] loadParticipantsFromRedis: Participantes carregados:', participants.length);
       } else {
         participants = [];
-        console.log('[BOT_DEBUG] loadParticipantsFromRedis: Nenhum participante encontrado, iniciando vazio.');
+        console.log('[BOT_DEBUG] loadParticipantsFromRedis: Nenhum participante encontrado ou formato inválido, iniciando vazio.');
       }
     } catch (err) {
       participants = [];
@@ -212,7 +209,7 @@ async function startBot() {
     const { connection, lastDisconnect, qr } = update;
     if (qr) {
       console.log('[BOT_INFO] Novo QR code gerado. Escaneie com seu WhatsApp:');
-      qrcode.generate(qr, { small: true });
+      qrcode.generate(qr, { small: true }); // QR code no terminal/logs
     }
     if (connection === 'close') {
       const boomError = lastDisconnect?.error ? new Boom(lastDisconnect.error) : undefined;
@@ -221,27 +218,33 @@ async function startBot() {
       console.log(`[BOT_INFO] Conexão fechada. Status: ${statusCode}, Erro: ${boomError?.message}, Reconectar: ${shouldReconnect}`);
 
       if (statusCode === DisconnectReason.connectionReplaced) {
-        console.log("[BOT_WARN] Conexão substituída. Outra sessão foi aberta.");
+        console.log("[BOT_WARN] Conexão substituída. Outra sessão foi aberta. Não tentará reconectar automaticamente esta instância.");
       } else if (statusCode === DisconnectReason.loggedOut) {
-        console.log("[BOT_WARN] Deslogado do WhatsApp. Não vai reconectar. Limpe as credenciais se quiser novo QR.");
+        console.log("[BOT_WARN] Deslogado do WhatsApp. Não vai reconectar. Limpe as credenciais manualmente no Redis se quiser forçar novo QR na próxima inicialização.");
       } else if (shouldReconnect) {
-        console.log('[BOT_INFO] Tentando reconectar...');
-        startBot();
+        console.log('[BOT_INFO] Tentando reconectar chamando startBot() novamente...');
+        // Cuidado com loops de reconexão muito rápidos em caso de falhas persistentes.
+        // Adicionar um delay ou contador de tentativas pode ser uma boa ideia.
+        setTimeout(startBot, 5000); // Tenta reconectar após 5 segundos, por exemplo.
       }
     } else if (connection === 'open') {
       console.log('[BOT_INFO] Bot conectado ao WhatsApp!');
-      console.log('[BOT_DEBUG] ID do Bot (sock.user):', JSON.stringify(sock.user));
+      console.log('[BOT_DEBUG] ID do Bot (sock.user):', sock.user?.id ? sock.user.id : 'Não definido ainda');
     }
   });
 
-  sock.ev.on('creds.update', () => {
+  sock.ev.on('creds.update', async () => { // Marcar como async se saveCreds for async
     console.log('[BOT_DEBUG] sock.ev("creds.update"): Evento recebido. Chamando saveCreds...');
-    saveCreds(); // saveCreds já tem seus próprios logs internos
-    console.log('[BOT_DEBUG] sock.ev("creds.update"): saveCreds chamado.');
+    try {
+      await saveCreds(); // saveCreds já tem seus próprios logs internos
+      console.log('[BOT_DEBUG] sock.ev("creds.update"): saveCreds chamado e concluído.');
+    } catch (e) {
+      console.error('[BOT_ERROR] sock.ev("creds.update"): Erro durante saveCreds:', e);
+    }
   });
 
   sock.ev.on('messages.upsert', async ({ messages }) => {
-    console.log('[BOT_DEBUG] sock.ev("messages.upsert"): Evento recebido:', JSON.stringify(messages));
+    console.log('[BOT_DEBUG] sock.ev("messages.upsert"): Evento recebido:', JSON.stringify(messages[0]?.key)); // Log mais curto
     const msg = messages[0];
     if (!msg.message) {
       console.log('[BOT_DEBUG] Mensagem sem conteúdo (msg.message), ignorando.');
@@ -254,7 +257,7 @@ async function startBot() {
 
     const chatId = msg.key.remoteJid;
     const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
-    const senderId = msg.key.participant || msg.key.remoteJid;
+    const senderId = msg.key.participant || msg.key.remoteJid; // ID do participante em grupo, ou do contato em chat privado
     console.log(`[BOT_DEBUG] Mensagem recebida: ChatID="${chatId}", SenderID="${senderId}", Texto="${text}"`);
 
     if (text.startsWith('@') && text.length > 1) {
@@ -266,14 +269,26 @@ async function startBot() {
           participants.push({ id: senderId, name: participantName });
           await saveParticipantsToRedis();
           console.log(`[BOT_INFO] Participante @${participantName} (${senderId}) adicionado.`);
-          await sock.sendMessage(chatId, { text: `🎉 @${participantName} foi adicionado ao sorteio!`, mentions: [senderId] });
+          try {
+            await sock.sendMessage(chatId, { text: `🎉 @${participantName} foi adicionado ao sorteio!`, mentions: [senderId] });
+          } catch (e) {
+            console.error(`[BOT_ERROR] Falha ao enviar mensagem de confirmação de adição:`, e);
+          }
         } else {
           console.log(`[BOT_INFO] Participante @${existingParticipant.name} (${senderId}) já está participando.`);
-          await sock.sendMessage(chatId, { text: `🚫 @${existingParticipant.name} já está participando!`, mentions: [senderId] });
+          try {
+            await sock.sendMessage(chatId, { text: `🚫 @${existingParticipant.name} já está participando!`, mentions: [senderId] });
+          } catch (e) {
+            console.error(`[BOT_ERROR] Falha ao enviar mensagem de participante existente:`, e);
+          }
         }
       } else {
         console.log('[BOT_WARN] Comando @ recebido sem nome válido.');
-        await sock.sendMessage(chatId, { text: '🚫 Por favor, envie um nome válido após @ (ex.: @Joao).', mentions: [senderId] });
+        try {
+          await sock.sendMessage(chatId, { text: '🚫 Por favor, envie um nome válido após @ (ex.: @Joao).', mentions: [senderId] });
+        } catch (e) {
+          console.error(`[BOT_ERROR] Falha ao enviar mensagem de nome inválido:`, e);
+        }
       }
     }
 
@@ -281,17 +296,20 @@ async function startBot() {
       console.log('[BOT_DEBUG] Comando !sortear detectado.');
       const botJid = sock.user?.id;
       console.log(`[BOT_DEBUG] Verificando permissão: SenderID="${senderId}", BotJID="${botJid}"`);
-      // Adapte esta lógica se necessário. Comparar apenas a parte numérica do JID.
+      
+      // Simplificando a lógica de permissão: apenas o próprio número do bot pode sortear.
+      // Você pode querer uma lógica mais complexa, como verificar se o senderId é um admin do grupo,
+      // ou se é um número de telefone específico seu.
       const senderNumericId = senderId.split('@')[0];
-      const botNumericId = botJid ? botJid.split(':')[0].split('@')[0] : null;
+      const botNumericId = botJid ? botJid.split(':')[0].split('@')[0] : null; // Pega a parte numérica antes do ':' e '@'
 
       if (!botJid || senderNumericId !== botNumericId) {
-         // Se quiser permitir um admin específico além do bot:
-         // const adminJid = "SEU_NUMERO_DE_ADMIN@s.whatsapp.net";
-         // const adminNumericId = adminJid.split('@')[0];
-         // if (senderNumericId !== botNumericId && senderNumericId !== adminNumericId) {
         console.log('[BOT_WARN] Comando !sortear negado. Permissão insuficiente.');
-        await sock.sendMessage(chatId, { text: '🚫 Apenas o administrador pode usar o comando !sortear.' });
+        try {
+          await sock.sendMessage(chatId, { text: '🚫 Apenas o administrador (o próprio bot) pode usar o comando !sortear.' });
+        } catch (e) {
+          console.error(`[BOT_ERROR] Falha ao enviar mensagem de permissão negada:`, e);
+        }
         return;
       }
       console.log('[BOT_DEBUG] Permissão para !sortear concedida.');
@@ -305,13 +323,21 @@ async function startBot() {
 
       if (participants.length === 0) {
         console.log('[BOT_INFO] Tentativa de sorteio sem participantes.');
-        await sock.sendMessage(chatId, { text: '🚫 Nenhum participante no sorteio!' });
+        try {
+          await sock.sendMessage(chatId, { text: '🚫 Nenhum participante no sorteio!' });
+        } catch (e) {
+          console.error(`[BOT_ERROR] Falha ao enviar mensagem de nenhum participante:`, e);
+        }
         return;
       }
       
       if (numWinners < 1) {
         console.log('[BOT_WARN] Tentativa de sorteio com número de vencedores < 1.');
-        await sock.sendMessage(chatId, { text: '🚫 O número de vencedores deve ser pelo menos 1.' });
+        try {
+          await sock.sendMessage(chatId, { text: '🚫 O número de vencedores deve ser pelo menos 1.' });
+        } catch (e) {
+          console.error(`[BOT_ERROR] Falha ao enviar mensagem de vencedores < 1:`, e);
+        }
         return;
       }
 
@@ -324,33 +350,42 @@ async function startBot() {
       const winnerJids = winners.map(w => w.id);
       console.log('[BOT_INFO] Vencedores sorteados:', JSON.stringify(winners));
 
-      await sock.sendMessage(chatId, { 
-        text: `🏆 ${numWinners > 1 ? 'Os vencedores' : 'O vencedor'} do sorteio ${numWinners > 1 ? 'são' : 'é'}: ${winnerMessages.join(', ')}! Parabéns!`, 
-        mentions: winnerJids 
-      });
-      console.log('[BOT_INFO] Mensagem de vencedores enviada.');
+      try {
+        await sock.sendMessage(chatId, { 
+          text: `🏆 ${numWinners > 1 ? 'Os vencedores' : 'O vencedor'} do sorteio ${numWinners > 1 ? 'são' : 'é'}: ${winnerMessages.join(', ')}! Parabéns!`, 
+          mentions: winnerJids 
+        });
+        console.log('[BOT_INFO] Mensagem de vencedores enviada.');
 
-      participants = [];
-      await saveParticipantsToRedis();
-      console.log('[BOT_INFO] Lista de participantes resetada.');
-      await sock.sendMessage(chatId, { text: 'Lista de participantes resetada para o próximo sorteio!' });
+        participants = [];
+        await saveParticipantsToRedis(); // Salva a lista vazia
+        console.log('[BOT_INFO] Lista de participantes resetada.');
+        await sock.sendMessage(chatId, { text: 'Lista de participantes resetada para o próximo sorteio!' });
+      } catch(e) {
+        console.error(`[BOT_ERROR] Falha ao enviar mensagens do sorteio ou resetar lista:`, e);
+      }
     }
   });
   console.log('[BOT_DEBUG] startBot: Handlers de eventos configurados.');
 }
 
-console.log('[BOT_DEBUG] Chamando startBot() pela primeira vez...');
+// Chama startBot() quando o script é carregado pela Vercel.
+// O QR Code (se necessário) aparecerá nos logs da função.
+console.log('[BOT_DEBUG] Chamando startBot() automaticamente ao carregar o script...');
 startBot().catch((err) => {
-  console.error('[BOT_FATAL] Erro crítico não tratado ao iniciar o bot:', err);
+  console.error('[BOT_FATAL] Erro crítico não tratado na chamada inicial de startBot():', err);
 });
 
-console.log('[BOT_DEBUG] ----- FIM DO SCRIPT api/index.js (setup inicial) -----');
+console.log('[BOT_DEBUG] ----- FIM DO SETUP INICIAL DO SCRIPT api/index.js -----');
 
-// Se estiver usando Vercel com um handler exportado (como em um projeto Next.js ou serverless puro):
-// module.exports = (req, res) => {
-//   console.log('[BOT_DEBUG] Handler de requisição Vercel chamado.');
-//   // A lógica de iniciar o bot uma vez e mantê-lo pode ser complexa aqui.
-//   // O startBot() acima já é chamado na inicialização do script.
-//   // Esta função de handler pode não ser ideal para um bot de longa duração.
-//   res.status(200).send('Bot em execução (verifique os logs para status).');
-// };
+// Exporta um handler HTTP para satisfazer a Vercel e evitar o erro "No exports found".
+// Esta função será chamada se houver uma requisição HTTP para a rota da função.
+module.exports = (req, res) => {
+  console.log(`[BOT_HANDLER] Requisição HTTP recebida: ${req.method} ${req.url}`);
+  console.log('[BOT_HANDLER] O bot tenta iniciar automaticamente quando a função Vercel é carregada.');
+  console.log('[BOT_HANDLER] Verifique os logs da função para o QR Code ou status da conexão do bot.');
+  
+  // Responde à requisição HTTP.
+  // O estado do bot (se está conectado, etc.) é gerenciado pelo startBot() e seus eventos.
+  res.status(200).send('Host do Bot WhatsApp ativo. O bot opera em segundo plano. Verifique os logs da função para status ou QR code.');
+};
