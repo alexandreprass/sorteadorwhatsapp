@@ -14,7 +14,7 @@
   ],
   "functions": {
     "api/index.js": {
-      "maxDuration": 60 // Aumenta o tempo limite para 45 segundos (ou até 60 no Hobby)
+      "maxDuration": 100 // Aumenta o tempo limite para 45 segundos (ou até 60 no Hobby)
     }
   }
 }
